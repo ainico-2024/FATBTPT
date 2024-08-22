@@ -1,0 +1,170 @@
+import torch
+import torch.nn as nn
+import torch.optim as optim
+from torchvision import datasets, models, transforms
+from torch.utils.data import DataLoader
+import os
+import copy
+import matplotlib.pyplot as plt
+from torch.optim import lr_scheduler
+
+scheduler = lr_scheduler.StepLR(optimizer, step_size=7, gamma=0.1)
+
+
+# Set device to GPU if available
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+# Define transformations for training and validation datasets
+data_transforms = {
+    'train': transforms.Compose([
+        transforms.Resize((224, 224)),
+        transforms.RandomHorizontalFlip(),
+        transforms.RandomRotation(10),
+        transforms.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2, hue=0.2),
+        transforms.RandomResizedCrop(224, scale=(0.8, 1.0)),
+        transforms.ToTensor(),
+        transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
+    ]),
+    'val': transforms.Compose([
+        transforms.Resize((224, 224)),
+        transforms.CenterCrop(224),
+        transforms.ToTensor(),
+        transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
+    ]),
+}
+
+# Define data directories
+data_dir = '/content/drive/MyDrive/demo'
+
+# Load datasets
+image_datasets = {x: datasets.ImageFolder(root=os.path.join(data_dir, x), transform=data_transforms[x]) for x in ['train', 'val']}
+dataloaders = {x: DataLoader(image_datasets[x], batch_size=8, shuffle=True, num_workers=4) for x in ['train', 'val']}
+dataset_sizes = {x: len(image_datasets[x]) for x in ['train', 'val']}
+class_names = image_datasets['train'].classes
+
+# Load the pretrained ResNet-152 model
+model_ft = models.resnet152(pretrained=True)
+
+# Modify the final layer to match the number of classes in your dataset
+num_ftrs = model_ft.fc.in_features
+model_ft.fc = nn.Linear(num_ftrs, len(class_names))
+
+# Move model to the appropriate device
+model_ft = model_ft.to(device)
+
+# Define loss function and optimizer
+criterion = nn.CrossEntropyLoss()
+optimizer = optim.SGD(model_ft.parameters(), lr=0.001, momentum=0.9)
+
+# Initialize lists to store metrics
+train_losses = []
+val_losses = []
+train_accuracies = []
+val_accuracies = []
+
+def train_model(model, criterion, optimizer, scheduler, num_epochs=5):
+    best_model_wts = copy.deepcopy(model.state_dict())
+    best_acc = 0.0
+
+    for epoch in range(num_epochs):
+        print(f'Epoch {epoch}/{num_epochs - 1}')
+        print('-' * 10)
+
+        # Each epoch has a training and validation phase
+        for phase in ['train', 'val']:
+            if phase == 'train':
+                model.train()  # Set model to training mode
+            else:
+                model.eval()   # Set model to evaluation mode
+
+            running_loss = 0.0
+            running_corrects = 0
+
+            # Iterate over data
+            for inputs, labels in dataloaders[phase]:
+                inputs = inputs.to(device)
+                labels = labels.to(device)
+
+                # Zero the parameter gradients
+                optimizer.zero_grad()
+
+                # Forward
+                with torch.set_grad_enabled(phase == 'train'):
+                    outputs = model(inputs)
+                    _, preds = torch.max(outputs, 1)
+                    loss = criterion(outputs, labels)
+
+                    # Backward + optimize only if in training phase
+                    if phase == 'train':
+                        loss.backward()
+                        optimizer.step()
+
+                # Statistics
+                running_loss += loss.item() * inputs.size(0)
+                running_corrects += torch.sum(preds == labels.data)
+
+            if phase == 'train':
+                scheduler.step()
+
+            epoch_loss = running_loss / dataset_sizes[phase]
+            epoch_acc = running_corrects.double() / dataset_sizes[phase]
+
+            print(f'{phase} Loss: {epoch_loss:.4f} Acc: {epoch_acc:.4f}')
+
+            # Store metrics
+            if phase == 'train':
+                train_losses.append(epoch_loss)
+                train_accuracies.append(epoch_acc.item())
+            else:
+                val_losses.append(epoch_loss)
+                val_accuracies.append(epoch_acc.item())
+
+            # Deep copy the model
+            if phase == 'val' and epoch_acc > best_acc:
+                best_acc = epoch_acc
+                best_model_wts = copy.deepcopy(model.state_dict())
+
+        print()
+
+    print(f'Best val Acc: {best_acc:4f}')
+
+    # Load best model weights
+    model.load_state_dict(best_model_wts)
+    return model
+
+# Train the model
+model_ft = train_model(model_ft, criterion, optimizer, scheduler, num_epochs=10)
+
+
+# Save the trained model
+torch.save(model_ft.state_dict(), 'resnet152_brain_mri.pth')
+
+# Plotting the loss and accuracy curves
+epochs = list(range(1, len(train_losses) + 1))
+
+plt.figure(figsize=(12, 5))
+
+# Plot Training and Validation Loss
+plt.subplot(1, 2, 1)
+plt.plot(epochs, train_losses, 'b-', label='Train Loss')
+plt.plot(epochs, val_losses, 'r-', label='Val Loss')
+plt.xlabel('Epoch')
+plt.ylabel('Loss')
+plt.title('Training and Validation Loss')
+plt.legend()
+
+# Plot Training and Validation Accuracy
+plt.subplot(1, 2, 2)
+plt.plot(epochs, train_accuracies, 'b-', label='Train Accuracy')
+plt.plot(epochs, val_accuracies, 'r-', label='Val Accuracy')
+plt.xlabel('Epoch')
+plt.ylabel('Accuracy')
+plt.title('Training and Validation Accuracy')
+plt.legend()
+
+plt.tight_layout()
+plt.show()
+
+
+
+
